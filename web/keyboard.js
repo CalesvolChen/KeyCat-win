@@ -110,13 +110,16 @@
       return out.set(key.x, H + 0.01 + CAP_H - key.depth, key.z).applyMatrix4(board.matrixWorld);
     },
     update(dt) {
+      let held = false;
       for (const key of keys.values()) {
+        held ||= key.down;
         const depthTarget = key.down ? 0.032 : 0;
         key.depth += (depthTarget - key.depth) * K.approach(key.down ? 60 : 24, dt);
         key.glow += ((key.down ? 1 : 0) - key.glow) * K.approach(key.down ? 40 : 5, dt);
         key.holder.position.y = H + 0.01 - key.depth;
         key.top.color.copy(key.base).lerp(HIT, key.glow);
       }
+      return held;
     },
   };
 
@@ -162,38 +165,44 @@
   wheel.scale.set(0.016, 0.012, 0.03);
   wheel.position.set(0, onTop(0, ML * 0.5) + 0.004, ML * 0.5);
   wheel.renderOrder = 7;
-  // The left button lights up on a click, like the keys do.
-  const buttonGeo = new THREE.CircleGeometry(1, 24, 0, Math.PI / 2);
-  buttonGeo.rotateX(Math.PI / 2);
-  const buttonMat = new THREE.MeshBasicMaterial({ color: '#b9d84f', transparent: true, opacity: 0, depthTest: false });
-  const button = new THREE.Mesh(buttonGeo, buttonMat);
-  button.scale.set(MW * 0.78, 1, ML * 0.82);
-  button.position.set(0.004, onTop(0.04, ML * 0.4) + 0.001, ML * 0.08);
-  button.renderOrder = 5;
-  shape.add(shell('#f4f1e6', 0.03, -2), shell('#1d1d1b', 0.013, -1), dome, button, seam.mesh, wheel);
+  shape.add(shell('#f4f1e6', 0.03, -2), shell('#1d1d1b', 0.013, -1), dome, seam.mesh, wheel);
+  // Inset green highlights follow the shell on either side of the seam.
+  const buttons = {};
+  for (const [name, phi] of [['left', 0], ['right', Math.PI / 2]]) {
+    const geo = new THREE.SphereGeometry(1, 16, 12, phi + 0.055, Math.PI / 2 - 0.11, 0.12, 1.22);
+    const points = geo.attributes.position;
+    for (let i = 0; i < points.count; i++) {
+      const z = ML * points.getZ(i);
+      const x = MW * points.getX(i) * (1 - 0.14 * z / ML);
+      points.setXYZ(i, x, onTop(x, z) + 0.002, z);
+    }
+    const material = new THREE.MeshBasicMaterial({ color: '#b9d84f', transparent: true, opacity: 0, depthWrite: false });
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.renderOrder = 5;
+    shape.add(mesh);
+    buttons[name] = { material, pressed: 0 };
+  }
   K.scene.add(mouse);
   // Cable: leaves the front of the mouse and curls away to the left, off the desk.
   const cable = new K.TaperTube(24, 6, K.flat('#2a2a27'), 1);
   K.scene.add(cable.mesh);
   const cableStart = V(0, 0, 0), cableEnd = V(-1.6, 0.02, 1.7), cableMid = V(0, 0, 0);
-  const faceTop = V(0, 0, 0);
   K.mouseProp = {
     group: mouse,
     home: MOUSE_HOME,
     hitMeshes: [dome],
     offset: V(0, 0, 0),
     kick: V(0, 0, 0),
-    pressed: 0,
-    // The disc follows the real mouse with a little lag and slides back home when let go.
+    // The mouse follows with a little lag and slides back home when let go.
     follow: new K.Spring(V(0, 0, 0), 4, 0.75),
-    update(dt, down) {
+    update(dt, leftDown, rightDown) {
       this.kick.multiplyScalar(1 - K.approach(3, dt));
       this.offset.copy(this.follow.step(this.kick, dt));
       mouse.position.copy(MOUSE_HOME).add(this.offset);
-      this.pressed += ((down ? 1 : 0) - this.pressed) * K.approach(30, dt);
-      buttonMat.opacity = 0.9 * this.pressed;
-      // A click squashes the mouse a touch under the paw.
-      shape.scale.set(1 + 0.03 * this.pressed, 1 - 0.1 * this.pressed, 1);
+      const blend = K.approach(30, dt);
+      buttons.left.pressed = K.mix(buttons.left.pressed, Number(leftDown), blend);
+      buttons.right.pressed = K.mix(buttons.right.pressed, Number(rightDown), blend);
+      for (const button of Object.values(buttons)) button.material.opacity = 0.9 * button.pressed;
       // The cable hangs from the front of the mouse and sags on its way off the desk.
       mouse.updateMatrixWorld();
       cableStart.set(0, MH * 0.25, ML * 0.98).applyMatrix4(shape.matrixWorld);
@@ -209,11 +218,12 @@
       bodyMat.color.set(flat ? '#f8f7f0' : '#ffffff');
       bodyMat.needsUpdate = true;
     },
-    // Where a paw rests on the mouse, in world space: on the palm hump at the back, so the
-    // buttons, wheel and cable stay in view in front of it.
+    // The paw rests on the hump and leans towards whichever button it presses.
     top(out) {
       mouse.updateMatrixWorld();
-      return out.copy(faceTop.set(0, MH + 0.045, -ML * 0.3)).applyMatrix4(shape.matrixWorld);
+      const press = Math.max(buttons.left.pressed, buttons.right.pressed);
+      const side = buttons.right.pressed - buttons.left.pressed;
+      return out.set(MW * 0.5 * side, MH + 0.045 - 0.028 * press, -ML * 0.3 + 0.032 * press).applyMatrix4(shape.matrixWorld);
     },
   };
 })();

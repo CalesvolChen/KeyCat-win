@@ -30,7 +30,7 @@ use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, RunEvent, Webview, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Wry,
 };
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Error as UpdateError, UpdaterExt};
 
 use hook::{Button, Input};
 use store::Store;
@@ -58,9 +58,10 @@ const BRIDGE: &str = r#"(() => {
 enum UpdateState {
     Idle,
     Checking,
-    Downloading(String, u32),
-    Ready(String),
+    Downloading(u32),
+    Installing(String),
     Current,
+    NoManifest,
     Failed,
 }
 
@@ -79,10 +80,10 @@ struct Host {
     drag: Option<Drag>,
     pending_delta: (f64, f64),
     last_cursor: (i32, i32),
+    last_pointer: Option<(f64, f64)>,
     key_events: u64,
     held: HashSet<u32>,
     update: UpdateState,
-    downloaded: Option<(Update, Vec<u8>)>,
 }
 
 /// Settings with their defaults applied, the same keys and fallbacks as the mac build.
@@ -335,6 +336,11 @@ fn tick(app: &AppHandle) {
             h.last_cursor = cursor;
             calls.push(format!("cat.cursor({},{})", cursor.0, cursor.1));
         }
+        // Use screen coordinates for motion so moving the panel itself only changes gaze.
+        if let Some((x, y)) = h.last_pointer.replace((pointer.x, pointer.y)) {
+            h.pending_delta.0 += (pointer.x - x) / factor;
+            h.pending_delta.1 += (pointer.y - y) / factor;
+        }
         if h.pending_delta != (0.0, 0.0) {
             calls.push(format!("cat.mouseMove({:.1},{:.1})", h.pending_delta.0, h.pending_delta.1));
             h.pending_delta = (0.0, 0.0);
@@ -426,6 +432,12 @@ fn on_input(app: &AppHandle, input: Input) {
 }
 
 fn on_button(app: &AppHandle, button: Button, down: bool) {
+    let name = match button {
+        Button::Left => "left",
+        Button::Right => "right",
+        Button::Other => "other",
+    };
+    js(app, &format!("cat.mouseButton({down},'{name}')"));
     if down {
         let hit = host(app).hit.clone();
         if hit != "none" {
@@ -438,11 +450,10 @@ fn on_button(app: &AppHandle, button: Button, down: bool) {
                 }
             }
         }
-    } else {
+    } else if button == Button::Left {
         stop_pet(app);
         stop_drag(app);
     }
-    js(app, &format!("cat.mouseButton({down})"));
 }
 
 fn start_pet(app: &AppHandle, panel: &WebviewWindow, pointer: (f64, f64)) {
@@ -581,11 +592,12 @@ fn update_item(app: &AppHandle) -> tauri::Result<Item> {
         return note(app, &format!("开发模式 v{version}"));
     }
     match host(app).update.clone() {
-        UpdateState::Ready(new) => action(app, "update:install", &format!("重启并更新到 v{new}")),
-        UpdateState::Downloading(_, percent) => note(app, &format!("正在下载更新 {percent}%")),
+        UpdateState::Installing(new) => note(app, &format!("正在安装 v{new}，完成后将自动重启")),
+        UpdateState::Downloading(percent) => note(app, &format!("正在下载更新 {percent}%")),
         UpdateState::Checking => note(app, "正在检查更新…"),
-        UpdateState::Current => note(app, &format!("已是最新版本 v{version}")),
-        UpdateState::Failed => action(app, "update:check", "检查更新失败，点击重试"),
+        UpdateState::Current => action(app, "update:check", &format!("检查更新（v{version} 已是最新）")),
+        UpdateState::NoManifest => action(app, "update:check", "检查更新（未找到发布清单）"),
+        UpdateState::Failed => action(app, "update:check", "检查更新（上次更新失败）"),
         UpdateState::Idle => action(app, "update:check", "检查更新…"),
     }
 }
@@ -607,6 +619,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             ("蓝灰猫", json!("grey")),
             ("白猫", json!("white")),
             ("三花猫", json!("calico")),
+            ("布偶猫", json!("ragdoll")),
         ])?,
     )?);
     // Only coats whose stripes would show get the choice; black and white stay plain.
@@ -643,7 +656,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         toggle(app, "腮红", "blush", s.blush)?,
         toggle(app, "胡须", "whiskers", s.whiskers)?,
     ])?);
-    let sizes = [("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)]
+    let sizes = [("特小", 0.45), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)]
         .iter()
         .map(|(text, value)| check(app, format!("scale:{value}"), text, s.scale == *value))
         .collect::<tauri::Result<Vec<_>>>()?;
@@ -738,7 +751,6 @@ fn on_menu(app: &AppHandle, id: &str) {
                 }
             }
             "update:check" => check_for_updates(app),
-            "update:install" => install_update(app),
             "quit" => app.exit(0),
             _ => {}
         }
@@ -832,7 +844,7 @@ fn check_for_updates(app: &AppHandle) {
     }
     {
         let mut h = host(app);
-        if matches!(h.update, UpdateState::Checking | UpdateState::Downloading(..) | UpdateState::Ready(_)) {
+        if matches!(h.update, UpdateState::Checking | UpdateState::Downloading(_) | UpdateState::Installing(_)) {
             return;
         }
         h.update = UpdateState::Checking;
@@ -840,13 +852,23 @@ fn check_for_updates(app: &AppHandle) {
     refresh_menu(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let found = match app.updater() {
+        let updater = app
+            .updater_builder()
+            .timeout(Duration::from_secs(30))
+            // Keep the tray available if Windows fails to start the installer.
+            .on_before_exit(|| {})
+            .build();
+        let found = match updater {
             Ok(updater) => updater.check().await,
             Err(error) => Err(error),
         };
-        let update = match found {
+        let mut update = match found {
             Ok(Some(update)) => update,
             Ok(None) => return set_update(&app, UpdateState::Current),
+            Err(UpdateError::ReleaseNotFound) => {
+                log("update manifest unavailable");
+                return set_update(&app, UpdateState::NoManifest);
+            }
             Err(error) => {
                 log(&format!("update check failed: {error}"));
                 return set_update(&app, UpdateState::Failed);
@@ -854,49 +876,42 @@ fn check_for_updates(app: &AppHandle) {
         };
         let version = update.version.clone();
         log(&format!("update {version} available"));
-        set_update(&app, UpdateState::Downloading(version.clone(), 0));
-        let (progress_app, progress_version) = (app.clone(), version.clone());
+        set_update(&app, UpdateState::Downloading(0));
+        update.timeout = Some(Duration::from_secs(300));
         let mut received = 0u64;
         let downloaded = update
             .download(
-                move |chunk, total| {
+                |chunk, total| {
                     received += chunk as u64;
                     if let Some(total) = total.filter(|total| *total > 0) {
                         let percent = (received * 100 / total).min(100) as u32;
-                        set_update(&progress_app, UpdateState::Downloading(progress_version.clone(), percent));
+                        set_update(&app, UpdateState::Downloading(percent));
                     }
                 },
                 || {},
             )
             .await;
-        match downloaded {
-            Ok(bytes) => {
-                log(&format!("update {version} downloaded"));
-                host(&app).downloaded = Some((update, bytes));
-                set_update(&app, UpdateState::Ready(version.clone()));
-                if let Some(tray) = app.tray_by_id(TRAY) {
-                    let _ = tray.set_tooltip(Some(format!("KeyCat：v{version} 已下载，可从菜单重启更新")));
-                }
-            }
+        let bytes = match downloaded {
+            Ok(bytes) => bytes,
             Err(error) => {
                 log(&format!("update download failed: {error}"));
-                set_update(&app, UpdateState::Failed);
+                return set_update(&app, UpdateState::Failed);
             }
+        };
+        log(&format!("installing update {version}"));
+        set_update(&app, UpdateState::Installing(version));
+        // Tauri's Windows installer closes this instance and relaunches KeyCat after installation.
+        if let Err(error) = update.restart_after_install(true).install(bytes) {
+            log(&format!("update install failed: {error}"));
+            set_update(&app, UpdateState::Failed);
         }
     });
 }
 
-/// Runs the downloaded installer, which closes this process and starts the new version.
-fn install_update(app: &AppHandle) {
-    let Some((update, bytes)) = host(app).downloaded.take() else { return };
-    log(&format!("installing update {}", update.version));
-    if let Err(error) = update.install(bytes) {
-        log(&format!("update install failed: {error}"));
-        set_update(app, UpdateState::Failed);
-    }
-}
-
 fn start_update_checks(app: &AppHandle) {
+    if DEV {
+        return;
+    }
     let app = app.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(15));
@@ -921,10 +936,10 @@ fn setup(app: &AppHandle) -> tauri::Result<()> {
         drag: None,
         pending_delta: (0.0, 0.0),
         last_cursor: (-9999, -9999),
+        last_pointer: None,
         key_events: 0,
         held: HashSet::new(),
         update: UpdateState::Idle,
-        downloaded: None,
     }));
     create_panel(app)?;
     TrayIconBuilder::with_id(TRAY)

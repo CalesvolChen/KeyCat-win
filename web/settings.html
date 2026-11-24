@@ -56,7 +56,6 @@ function render() {
     for (const it of g.items) {
       const row = document.createElement('div');
       row.className = 'row';
-      row.dataset.group = g.group;
       const head = document.createElement('div');
       head.className = 'head';
       const label = document.createElement('label');
@@ -98,10 +97,9 @@ function show() {
     if (it.type === 'toggle') input.checked = values[it.key];
     else { input.value = values[it.key]; input.show(values[it.key]); }
   }
-  // A switched-off group greys out its sliders.
-  for (const [toggle, group] of [['annoyOn', TUNING_SCHEMA[0].group], ['curiousOn', TUNING_SCHEMA[1].group]]) {
-    for (const { it, row } of Object.values(inputs)) {
-      if (row.dataset.group === group && it.key !== toggle) row.classList.toggle('off', !values[toggle]);
+  for (const { toggle, items } of TUNING_SCHEMA) {
+    for (const { key } of items) {
+      if (key !== toggle) inputs[key].row.classList.toggle('off', !values[toggle]);
     }
   }
 }

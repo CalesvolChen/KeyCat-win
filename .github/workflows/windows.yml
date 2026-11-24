@@ -47,20 +47,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The updater key only exists as a repository secret; without it (pull requests from
-      # forks) the installer is built unsigned, which is fine for checking that it builds.
+      # Only release builds need access to the updater signing key.
       - name: Build installer
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            npm run dist
-          else
-            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
               echo "TAURI_SIGNING_PRIVATE_KEY is required to publish a release" >&2
               exit 1
             fi
+            npm run dist
+          else
             npm run dist -- --config '{"bundle":{"createUpdaterArtifacts":false}}'
           fi
 
@@ -70,11 +69,16 @@ jobs:
           mkdir -p out
           cp target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe out/KeyCat-Windows-Setup.exe
           ls -l out
-          [ -f target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe.sig ] || exit 0
-          url="https://github.com/ElloboDK/KeyCat/releases/download/v$version/KeyCat-Windows-Setup.exe"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || exit 0
+          signature_file="target/release/bundle/nsis/KeyCat_${version}_x64-setup.exe.sig"
+          if [ ! -s "$signature_file" ]; then
+            echo "Updater signature is missing: $signature_file" >&2
+            exit 1
+          fi
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/KeyCat-Windows-Setup.exe"
           date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           VERSION="$version" URL="$url" DATE="$date" \
-          SIG="$(cat target/release/bundle/nsis/KeyCat_"$version"_x64-setup.exe.sig)" \
+          SIG="$(cat "$signature_file")" \
           node -e '
             const fs = require("fs");
             const { VERSION, URL, DATE, SIG } = process.env;
@@ -104,9 +108,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" out/KeyCat-Windows-Setup.exe out/latest.json out/latest.yml --clobber
+          assets=(out/KeyCat-Windows-Setup.exe out/latest.json out/latest.yml)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

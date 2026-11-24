@@ -9,15 +9,19 @@
 
   const { Spring } = K;
   const opts = { privacy: false, sleepAfter: 60 };
+  const FIDGETS = ['tilt', 'tilt', 'ear', 'slowBlink', 'look', 'tail'];
+  const IDLE_POSES = ['stretch', 'rest', 'paper'];
+  const ACT_DURATION = { tilt: 1.8, ear: 0.4, slowBlink: 1.4, look: 2.2, tail: 1, stretch: 2.8, rest: 5.2, paper: 3.6 };
   const S = {
-    lastInput: now(), lastKey: -100, lastMouse: -100, mouseDown: false,
+    lastInput: now(), lastKey: -100, lastMouse: -100, otherMouseDown: false,
+    mouseButtons: { left: { down: false, until: -100 }, right: { down: false, until: -100 } },
     cursor: null, cursorSeen: -100, petting: false, petUntil: 0, petX: 0,
     sleep: 0, asleep: false, wakeAt: -100, nextBlink: now() + 3, nextZ: 0,
     rub: 0, busyUntil: now() + 2, lastPaw: 'R', hit: 'none',
     // How worked up the cat is (fast typing, quick mouse moves): wider pupils, livelier tail.
     excite: 0, strokes: [], tailPhase: 0,
-    // An idle fidget: { kind, t0, dur, side }.
-    act: null, nextAct: now() + 4,
+    // Small fidgets and longer poses share one slot so their animations never overlap.
+    act: null, nextAct: now() + 4, nextPose: now() + 8, lastPose: null,
     // Irritation, 0..1, from key mashing, very fast typing, petting for too long or being woken
     // up. Past a threshold the cat is `cross`: it thumps its tail on the desk until it calms.
     annoy: 0, cross: false, crossSince: 0, thumpPhase: 0, thumpLift: 0, lastSlam: 0, petStart: -1,
@@ -56,6 +60,27 @@
   const popups = [], zs = [];
   const tmp = V(0, 0, 0), tmp2 = V(0, 0, 0);
 
+  // A crumpled mint paper ball, with uneven folds that show as it rolls.
+  const paperGeo = new THREE.IcosahedronGeometry(0.105, 1);
+  const paperPoints = paperGeo.attributes.position;
+  const paperColors = [];
+  const paperPalette = ['#d7ecdd', '#a9cfbf', '#bdddcf', '#8fb9a8', '#e3f0dc'].map(c => new THREE.Color(c));
+  for (let i = 0; i < paperPoints.count; i++) {
+    const x = paperPoints.getX(i), y = paperPoints.getY(i), z = paperPoints.getZ(i);
+    const fold = 1 + 0.15 * Math.sin(34 * x + 52 * y - 41 * z);
+    paperPoints.setXYZ(i, x * fold, y * fold * 0.9, z * fold);
+    const color = paperPalette[Math.floor(i / 3) % paperPalette.length];
+    paperColors.push(color.r, color.g, color.b);
+  }
+  paperGeo.setAttribute('color', new THREE.Float32BufferAttribute(paperColors, 3));
+  const paper = new THREE.Mesh(paperGeo, new THREE.MeshBasicMaterial({ vertexColors: true }));
+  const paperRim = new THREE.Mesh(paperGeo, K.back('#57766d'));
+  paperRim.scale.setScalar(1.1);
+  paper.add(paperRim);
+  paper.name = 'idle-paper';
+  paper.visible = false;
+  scene.add(paper);
+
   // Adds irritation; it only starts to fade a couple of seconds after the last poke. Switched off
   // in the settings, nothing irritates the cat (the 试试 button still forces it).
   function poke(amount, t, force = false) {
@@ -72,9 +97,34 @@
     S.busyUntil = t + 3;
     S.act = null;
     S.nextAct = t + 4 + Math.random() * 4;
+    S.nextPose = t + 8 + Math.random() * 4;
   }
 
-  function mousing(t) { return S.mouseDown || t - S.lastMouse < 1.4; }
+  function idleAction(t, available) {
+    if (!available || !TUNING.idleActionsOn) {
+      S.act = null;
+      return null;
+    }
+    if (S.act && (t >= S.act.t0 + S.act.dur || (S.act.kind === 'paper' && !TUNING.idleToyOn))) S.act = null;
+    if (S.act || t - S.lastInput < 2.5) return S.act;
+
+    const poseDue = t >= S.nextPose;
+    if (!poseDue && t < S.nextAct) return null;
+    const choices = poseDue ? IDLE_POSES.filter(kind => kind !== S.lastPose && (kind !== 'paper' || TUNING.idleToyOn)) : FIDGETS;
+    const kind = choices[Math.floor(Math.random() * choices.length)];
+    const dur = ACT_DURATION[kind];
+    S.act = { kind, t0: t, dur, side: Math.random() < 0.5 ? -1 : 1 };
+    S.nextAct = t + dur + 4 + Math.random() * 5;
+    if (poseDue) {
+      S.lastPose = kind;
+      S.nextPose = t + dur + 11 + Math.random() * 7;
+    }
+    S.busyUntil = Math.max(S.busyUntil, t + dur + 0.8);
+    return S.act;
+  }
+
+  function mouseHeld() { return S.mouseButtons.left.down || S.mouseButtons.right.down || S.otherMouseDown; }
+  function mousing(t) { return mouseHeld() || t - S.lastMouse < 1.4; }
 
   function key(code, down) {
     const t = now();
@@ -190,10 +240,11 @@
 
   // A strike is scripted (it has to land on time); every other paw move goes through the paw's
   // spring so it eases out, carries momentum from the strike, and settles with a small bob.
-  function updatePaw(name, paw, t, dt) {
+  function updatePaw(name, paw, t, dt, pose) {
     const k = paw.key;
     const strikeAge = t - paw.t0;
-    if (k && (paw.down || strikeAge < paw.dur + 0.06)) {
+    const usingMouse = name === 'L' && mousing(t);
+    if (k && (strikeAge < paw.dur + 0.06 || (paw.down && !usingMouse))) {
       const top = keyboard.keyTop(k, tmp2);
       const hover = tmp.copy(top).add(V(0, 0.12, 0));
       const press = top.clone().add(V(0, 0.07, 0));
@@ -213,10 +264,13 @@
       return;
     }
     let target, hz = 3.2, damping = 0.78;
-    if (name === 'L' && mousing(t)) {
+    if (usingMouse) {
+      // Finish the strike, then free the paw while the key stays down until key-up.
+      paw.key = null;
+      paw.down = false;
       // Holding the mouse the paw sticks to it, so this spring is stiff.
       target = mouseProp.top(tmp);
-      hz = t - S.lastMouse < 0.05 || S.mouseDown ? 9 : 6;
+      hz = t - S.lastMouse < 0.05 || mouseHeld() ? 9 : 6;
       damping = 0.9;
     } else if (k && t - paw.t0 < 0.45) {
       // Hovers over the key it just hit, ready for the next one.
@@ -232,6 +286,16 @@
       cat.attach(arm.shoulderLocal, arm.shoulder);
       target = tmp.set(arm.shoulder.x + paw.side * 0.02, 0.26, 0.68);
       hz = 2.4;
+    }
+    if (pose.stretch) {
+      target.lerp(tmp2.set(cat.home.x + paw.side * 0.44, 0.34, 1.04), pose.stretch);
+      hz = 5;
+    } else if (pose.rest) {
+      target.lerp(tmp2.set(cat.home.x + paw.side * 0.24, 0.26, 0.68), pose.rest);
+      hz = 4;
+    } else if (name === 'R' && pose.tap) {
+      target.lerp(tmp2.set(paper.position.x - 0.16, paper.position.y + 0.08, paper.position.z), pose.tap);
+      hz = 7;
     }
     paw.spring.hz = hz;
     paw.spring.damping = damping;
@@ -252,10 +316,9 @@
     if (S.petting) S.petUntil = t + 0.25;
     const pet = t < S.petUntil;
 
-    keyboard.update(dt);
-    mouseProp.update(dt, S.mouseDown);
-    updatePaw('L', paws.L, t, dt);
-    updatePaw('R', paws.R, t, dt);
+    const keysHeld = keyboard.update(dt) || tailTap.down;
+    const { left, right } = S.mouseButtons;
+    mouseProp.update(dt, left.down || t < left.until, right.down || t < right.until);
     updateTailTap(t, dt);
 
     // Excitement: how busy the last two seconds were.
@@ -288,18 +351,27 @@
     if (S.cross || curiousNow) S.busyUntil = Math.max(S.busyUntil, t + 1);
 
     // Idle fidgets, only when nothing else is going on.
-    const idleFor = t - S.lastInput;
-    if (S.act && t > S.act.t0 + S.act.dur) S.act = null;
-    if (!S.act && t > S.nextAct && idleFor > 2.5 && !S.asleep && !pet && !S.cross && !curiousNow) {
-      const kinds = ['tilt', 'tilt', 'ear', 'slowBlink', 'look', 'tail'];
-      const kind = kinds[Math.floor(Math.random() * kinds.length)];
-      S.act = { kind, t0: t, dur: { tilt: 1.8, ear: 0.4, slowBlink: 1.4, look: 2.2, tail: 1 }[kind], side: Math.random() < 0.5 ? -1 : 1 };
-      S.nextAct = t + 4 + Math.random() * 5;
-      S.busyUntil = Math.max(S.busyUntil, t + S.act.dur + 0.8);
-    }
-    const act = S.act, actU = act ? (t - act.t0) / act.dur : 0;
+    const act = idleAction(t, !S.asleep && !pet && !S.cross && !curiousNow && !keysHeld && !mousing(t));
+    const actU = act ? (t - act.t0) / act.dur : 0;
     // Smooth in, hold, smooth out over the fidget's duration.
     const actEnv = act ? smooth(0, 0.25, actU) * (1 - smooth(0.7, 1, actU)) : 0;
+    const playing = act?.kind === 'paper';
+    const pose = {
+      stretch: act?.kind === 'stretch' ? actEnv : 0,
+      rest: act?.kind === 'rest' ? actEnv : 0,
+      tap: playing ? smooth(0.26, 0.52, actU) * (1 - smooth(0.55, 0.75, actU)) : 0,
+    };
+    paper.visible = playing;
+    if (playing) {
+      // The ball rolls into reach, then rolls away as the paw follows through.
+      const inRoll = smooth(0, 0.25, actU), outRoll = smooth(0.54, 0.92, actU);
+      const hop = Math.sin(outRoll * Math.PI) * 0.043;
+      paper.position.set(mix(1.32, 0.78, inRoll) + 0.55 * outRoll, 0.11 + hop, 0.31 - 0.09 * outRoll);
+      paper.rotation.set(0.9 * outRoll, 0.36, 5 * (inRoll - outRoll));
+      paper.scale.setScalar(smooth(0, 0.08, actU) * (1 - smooth(0.9, 1, actU)));
+    }
+    updatePaw('L', paws.L, t, dt, pose);
+    updatePaw('R', paws.R, t, dt, pose);
 
     // Body: the haunches stay planted; the spine bends towards whatever the busy paw reaches for.
     const striking = Object.values(paws).find(p => p.key && (p.down || t - p.t0 < 0.3));
@@ -322,6 +394,9 @@
     // Curious: leans in a little towards what it is watching, chest up rather than loafed.
     hunch += 0.06 * curious;
     squash -= 0.04 * curious;
+    hunch += 0.38 * pose.stretch + 0.25 * pose.rest + 0.11 * pose.tap;
+    squash += 0.26 * pose.stretch + 0.33 * pose.rest;
+    shift += (pose.rest ? act.side * 0.18 * pose.rest : 0) + 0.22 * pose.tap;
     // Patting with the tail, the hips shift a touch towards it.
     shift += 0.06 * smooth(0, 1, tailTap.reach);
     P.shift.step(shift, dt);
@@ -346,6 +421,7 @@
     const typing = Object.values(paws).find(p => p.key && p.down);
     if (typing && t - S.lastKey < 0.6) focus = screen(keyboard.keyTop(typing.key, tmp2), V());
     else if (tailTap.key && t - tailTap.t0 < 0.6) focus = screen(tailTap.tip, V());
+    else if (playing) focus = screen(paper.position, V());
     else if (S.cursor) focus = V(S.cursor.x, S.cursor.y, 0);
     let lx = 0, ly = 0;
     if (focus) {
@@ -368,11 +444,13 @@
     // Curious, it turns its whole face to follow the pointer, not just its eyes.
     const follow = mix(0.3, 0.5, curious);
     P.yaw.step(mix(lx * follow, huff, cross) + petSide * 0.18 * S.rub, dt);
-    P.pitch.step(ly * mix(0.12, 0.22, curious) * (1 - cross) - 0.28 + 0.5 * P.hunch.x + (mousing(t) ? 0.06 : 0) + 0.5 * S.sleep + 0.08 * cross, dt);
+    const idleNod = 0.17 * pose.stretch + 0.13 * pose.rest + 0.12 * pose.tap;
+    P.pitch.step(ly * mix(0.12, 0.22, curious) * (1 - cross) - 0.28 + 0.5 * P.hunch.x + (mousing(t) ? 0.06 : 0) + 0.5 * S.sleep + 0.08 * cross + idleNod, dt);
     // Curious head tilt: towards a key being watched, or a fidget, or a pointer resting nearby.
     let roll = 0;
     if (striking) roll = clamp(P.shift.x * 1.2, -0.18, 0.18);
     if (act && act.kind === 'tilt') roll += act.side * 0.26 * actEnv;
+    if (pose.rest) roll += act.side * 0.22 * pose.rest;
     if (S.cursor && !striking && !mousing(t) && t - S.cursorSeen > 1.2 && Math.abs(lx) < 0.5 && Math.abs(ly) < 0.6) roll += 0.12 * Math.sign(lx || 1);
     // The classic curious head cock, towards the side the pointer is on.
     roll += 0.2 * curious * (lx >= 0 ? -1 : 1);
@@ -398,6 +476,7 @@
     if (curiousNow && t > S.nextBlink - 0.2) S.nextBlink = t + 0.5;
     let blink = t > S.nextBlink ? Math.sin(clamp((t - S.nextBlink) / 0.15, 0, 1) * Math.PI) : 0;
     if (act && act.kind === 'slowBlink') blink = Math.max(blink, 0.85 * Math.sin(clamp(actU, 0, 1) * Math.PI));
+    blink = Math.max(blink, 0.58 * pose.stretch, 0.86 * pose.rest);
     const closed = (pet && !S.cross) || S.sleep > 0.5;
     // Excited and curious cats' pupils go wide and round (curious most of all, up to the size set
     // in the 调节 window); cross ones narrow to slits under heavy lids. The pupil never grows past
@@ -554,7 +633,21 @@
       mouseProp.kick.z = clamp(mouseProp.kick.z + dy * 0.004, -0.12, 0.12);
       wake(t);
     },
-    mouseButton(down) { const t = now(); S.mouseDown = down; S.lastMouse = t; wake(t); },
+    mouseButton(down, name = 'left') {
+      const t = now();
+      if (name === 'other') S.otherMouseDown = down;
+      else {
+        const button = S.mouseButtons[name];
+        button.down = down;
+        if (down) {
+          // Keep a tap visible even if the paw is still reaching over from the keyboard.
+          const reaching = paws.L.pos.distanceTo(mouseProp.top(tmp)) > 0.2;
+          button.until = t + (reaching ? 0.28 : 0.1);
+        }
+      }
+      S.lastMouse = t;
+      wake(t);
+    },
     // Canvas CSS pixels; may lie outside the canvas so the eyes keep following the pointer.
     cursor(x, y) {
       if (!S.cursor || Math.abs(S.cursor.x - x) + Math.abs(S.cursor.y - y) > 3) S.cursorSeen = now();
@@ -579,7 +672,7 @@
         for (const g of TUNING_SCHEMA) for (const it of g.items) TUNING[it.key] = it.key in o.tune ? o.tune[it.key] : it.def;
       }
       cat.setLook(Object.fromEntries(Object.entries(o).filter(([k]) => k in cat.look)));
-      S.busyUntil = now() + 1;
+      S.busyUntil = Math.max(S.busyUntil, now() + 1);
     },
     sleepNow() { S.asleep = true; S.lastInput = now() - opts.sleepAfter; },
     // Makes the cat cross right away (for checking the tail thump).
@@ -587,9 +680,11 @@
     // Makes the cat curious for a few seconds (the 调节 window's 试试 button).
     curiousNow(seconds = 3) { const t = now(); S.curiousUntil = t + seconds; S.busyUntil = t + seconds + 1; wake(t); },
     reset() {
-      S.mouseDown = false; S.lastMouse = -100; S.lastKey = -100; S.petting = false; S.petUntil = 0;
+      for (const button of Object.values(S.mouseButtons)) { button.down = false; button.until = -100; }
+      S.otherMouseDown = false; S.lastMouse = -100; S.lastKey = -100; S.petting = false; S.petUntil = 0;
       S.asleep = false; S.sleep = 0; S.lastInput = now(); S.busyUntil = now() + 2;
       S.strokes = []; S.excite = 0; S.act = null; S.nextAct = now() + 4;
+      S.nextPose = now() + 8; S.lastPose = null; paper.visible = false;
       S.annoy = 0; S.cross = false; S.petStart = -1; S.thumpLift = 0;
       S.moves = []; S.mouseSpeed = 0; S.curiousUntil = -100;
       P.cross.set(0); P.desk.set(0); P.curious.set(0);
@@ -620,9 +715,10 @@
     window.addEventListener('keyup', e => key(e.code, false));
   }
   if (K.devPointer) {
+    const buttonName = e => e.button === 0 ? 'left' : e.button === 2 ? 'right' : 'other';
     window.addEventListener('mousemove', e => { window.cat.cursor(e.clientX, e.clientY); window.cat.mouseMove(e.movementX, e.movementY); });
-    window.addEventListener('mousedown', e => hitTest(e.clientX, e.clientY) === 'pet' ? window.cat.pet(true, e.clientX) : window.cat.mouseButton(true));
-    window.addEventListener('mouseup', () => { window.cat.pet(false); window.cat.mouseButton(false); });
+    window.addEventListener('mousedown', e => e.button === 0 && hitTest(e.clientX, e.clientY) === 'pet' ? window.cat.pet(true, e.clientX) : window.cat.mouseButton(true, buttonName(e)));
+    window.addEventListener('mouseup', e => { if (e.button === 0) window.cat.pet(false); window.cat.mouseButton(false, buttonName(e)); });
   }
   loop();
 })();

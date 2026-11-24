@@ -3,7 +3,12 @@
 // in with `cat.options({ tune: {...} })`. Values are in the units shown in the window.
 'use strict';
 const TUNING_SCHEMA = [
-  { group: '不耐烦（尾巴捶桌）', items: [
+  { group: '挂机动作', toggle: 'idleActionsOn', items: [
+    { key: 'idleActionsOn', label: '启用挂机动作', type: 'toggle', def: true,
+      hint: '空闲时偶尔伸懒腰、趴下歇一会儿。操作键鼠或摸猫时会停下。' },
+    { key: 'idleToyOn', label: '偶尔拨弄纸团', type: 'toggle', def: true },
+  ] },
+  { group: '不耐烦（尾巴捶桌）', toggle: 'annoyOn', items: [
     { key: 'annoyOn', label: '会不耐烦', type: 'toggle', def: true,
       hint: '关掉后不会再生气，也不会甩尾巴捶桌。' },
     { key: 'typeRate', label: '打字多快会烦', type: 'range', min: 4, max: 20, step: 1, def: 9, unit: '键/秒',
@@ -18,7 +23,7 @@ const TUNING_SCHEMA = [
       hint: '安静 2 秒后，每秒消掉这么多烦躁。' },
     { key: 'thumpRate', label: '捶桌节奏', type: 'range', min: 1, max: 5, step: 0.1, def: 2.6, unit: '下/秒' },
   ] },
-  { group: '好奇（快速移动鼠标）', items: [
+  { group: '好奇（快速移动鼠标）', toggle: 'curiousOn', items: [
     { key: 'curiousOn', label: '会好奇', type: 'toggle', def: true,
       hint: '快速移动鼠标时，猫瞪大眼睛、瞳孔放大，竖起耳朵盯着光标。' },
     { key: 'curiousSpeed', label: '鼠标多快会好奇', type: 'range', min: 300, max: 4000, step: 100, def: 1400, unit: '点/秒' },

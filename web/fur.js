@@ -12,11 +12,13 @@
     uPatchA: { value: C('#151515') },    // calico patches
     uPatchB: { value: C('#151515') },
     uInner: { value: C('#151515') },     // inner ear
+    uPoint: { value: C('#151515') },     // bicolor mask, ears and tail
     uStripes: { value: 0 },
     uMuzzle: { value: 0 },
     uBib: { value: 0 },
     uCalico: { value: 0 },
     uTuxedo: { value: 0 },
+    uBicolor: { value: 0 },
     uInnerAmt: { value: 0 },
     uShade: { value: 0 },
   };
@@ -43,8 +45,8 @@
     }`;
 
   const fragment = `
-    uniform vec3 uFur, uLight, uDark, uPatchA, uPatchB, uInner;
-    uniform float uStripes, uMuzzle, uBib, uCalico, uTuxedo, uInnerAmt, uShade;
+    uniform vec3 uFur, uLight, uDark, uPatchA, uPatchB, uInner, uPoint;
+    uniform float uStripes, uMuzzle, uBib, uCalico, uTuxedo, uBicolor, uInnerAmt, uShade;
     varying vec3 vRest;
     varying vec3 vNormal;
     varying float vAlong;
@@ -68,9 +70,23 @@
     void main() {
       vec3 col = uFur;
       vec3 p = vRest;
-      float light = 0.0, dark = 0.0, inner = 0.0;
+      float light = 0.0, dark = 0.0, inner = 0.0, point = 0.0;
       #ifdef HEAD
         // Head geometry is a unit sphere scaled (0.56, 0.47, 0.47) by the mesh.
+        if (uBicolor > 0.0) {
+          // The cap wraps into the cheeks. The white blaze starts between the brows,
+          // stays narrow around the eyes and opens out below them into the muzzle.
+          float edge = mix(0.23, -0.64, smoothstep(-0.58, 0.52, p.z));
+          float cap = smoothstep(edge - 0.018, edge + 0.025, p.y);
+          float width = 0.017 + 0.15 * (1.0 - smoothstep(-0.16, 0.46, p.y))
+                             + 0.53 * (1.0 - smoothstep(-0.71, -0.13, p.y));
+          float tip = 1.0 - smoothstep(0.34, 0.51, p.y);
+          float center = 0.025 * smoothstep(-0.42, 0.48, p.y);
+          float blaze = (1.0 - smoothstep(width * tip, (width + 0.025) * tip + 0.001, abs(p.x - center)))
+                      * smoothstep(0.0, 0.28, tip) * smoothstep(0.27, 0.52, p.z);
+          point = cap * (1.0 - blaze);
+          light = max(blaze, 1.0 - smoothstep(-0.82, -0.67, p.y)) * uBicolor;
+        }
         if (p.z > 0.0) {
           vec2 q = p.xy;
           // Two lobes under the nose and a little chin: the classic pale cat muzzle.
@@ -107,6 +123,7 @@
         float pb = blob3(p, vec3(0.55, 0.55, -0.15), 0.5) * (1.0 - bib);
       #endif
       #ifdef EAR
+        point = 1.0;
         // Ear lathe: radius shrinks from 0.28 at the base to 0 at the tip (y 0.37).
         // Every point lies on the lathe radius, so the inner ear is a band across the front face.
         float rMax = mix(0.28, 0.0, clamp((p.y + 0.06) / 0.43, 0.0, 1.0));
@@ -118,6 +135,7 @@
         #endif
       #endif
       #ifdef TAIL
+        point = 1.0;
         // Rings down the tail, a dark tip; calico tails are black with one orange band.
         dark = max(dark, rings(vAlong, 5.0, 0.42) * step(0.2, vAlong) * uStripes);
         dark = max(dark, smoothstep(0.9, 0.91, vAlong) * uStripes);
@@ -128,6 +146,7 @@
         // Calico forelegs are white, as on most real calicos.
         float pa = 0.0, pb = 0.0;
       #endif
+      col = mix(col, uPoint, point * uBicolor);
       col = mix(col, uPatchA, pa * uCalico);
       col = mix(col, uPatchB, pb * uCalico);
       col = mix(col, uDark, dark);
@@ -151,7 +170,7 @@
 
   // Writes a coat: colours plus how strongly each marking shows (0 hides it).
   K.setFur = f => {
-    for (const k of ['fur', 'light', 'dark', 'patchA', 'patchB', 'inner']) U['u' + k[0].toUpperCase() + k.slice(1)].value.set(f[k] || f.fur);
-    for (const k of ['stripes', 'muzzle', 'bib', 'calico', 'tuxedo', 'innerAmt', 'shade']) U['u' + k[0].toUpperCase() + k.slice(1)].value = f[k] || 0;
+    for (const k of ['fur', 'light', 'dark', 'patchA', 'patchB', 'inner', 'point']) U['u' + k[0].toUpperCase() + k.slice(1)].value.set(f[k] || f.fur);
+    for (const k of ['stripes', 'muzzle', 'bib', 'calico', 'tuxedo', 'bicolor', 'innerAmt', 'shade']) U['u' + k[0].toUpperCase() + k.slice(1)].value = f[k] || 0;
   };
 })();

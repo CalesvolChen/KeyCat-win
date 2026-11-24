@@ -15,7 +15,7 @@ curl -L -o /tmp/KeyCat-macOS.zip https://github.com/ElloboDK/KeyCat/releases/lat
 
 首次启动需在「系统设置 → 隐私与安全性 → 输入监控」里允许 KeyCat，然后重启应用。它只读取哪个键被按下，不记录输入内容。手动从浏览器下载时，若提示「已损坏」，执行 `xattr -dr com.apple.quarantine /Applications/KeyCat.app`。装在「应用程序」文件夹里的 KeyCat 会自动更新：启动 15 秒后和之后每 6 小时检查一次，有新版就在后台下载，退出时替换，也可以在菜单里点「重启并更新」。1.0.2 及更早的版本没有这个功能，需要用上面的命令重装一次。
 
-**Windows**：从 [Releases](https://github.com/ElloboDK/KeyCat/releases/latest) 下载 `KeyCat-Windows-Setup.exe` 运行。SmartScreen 拦截时点「更多信息 → 仍要运行」。安装包只有几 MB，猫由系统自带的 WebView2 绘制，极少数没装 WebView2 的 Win10 会在安装时自动下载。应用会自动更新，1.0.x 的旧版会自动升级过来并保留设置。
+**Windows**：从 [KeyCat-win Releases](https://github.com/CalesvolChen/KeyCat-win/releases) 下载 `KeyCat-Windows-Setup.exe` 运行。SmartScreen 拦截时点「更多信息 → 仍要运行」。安装包只有几 MB，猫由系统自带的 WebView2 绘制，极少数没装 WebView2 的 Win10 会在安装时自动下载。安装版启动约 15 秒后检查更新，之后每 6 小时检查一次，也可以在托盘菜单中点击「检查更新」。发现新版后会下载安装，完成后自动重新打开 KeyCat。此前从上游仓库安装的版本需要手动安装一次 KeyCat-win，才能接收这个仓库的更新。
 
 ## 使用
 
@@ -32,15 +32,27 @@ npm start             # 本机调试
 npm run dist          # → win/target/release/bundle/nsis/KeyCat_<版本>_x64-setup.exe（需 Rust 和 Node.js 22+，在 Windows 上执行）
 ```
 
-mac 版用 `signing/` 里自动生成的本地证书签名，这样重新编译后「输入监控」授权仍然有效。mac 自动更新只接受同一张证书签名的新版，所以发布包必须在有这个目录的机器上打，证书丢了已安装的 mac 版也收不到更新。Windows 自动更新的签名私钥也放在这里（`tauri-updater.key` 和它的密码 `tauri-updater.password`），内容同时存在仓库的 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 Secret 里，公钥写在 `win/tauri.conf.json`。私钥丢了已安装的版本就收不到更新，要另外备份。不要提交这个目录。
+mac 版用 `signing/` 里自动生成的本地证书签名，这样重新编译后「输入监控」授权仍然有效。mac 自动更新只接受同一张证书签名的新版，所以发布包必须在有这个目录的机器上打，证书丢了已安装的 mac 版也收不到更新。Windows 自动更新使用 `signing/tauri-updater.key` 和 `signing/tauri-updater.password` 签名。公钥写在 `win/tauri.conf.json`。请备份私钥和密码，切换签名密钥会导致已安装的版本收不到更新。不要提交 `signing/`。
 
 ## 发布
 
-mac 和 Windows 共用一个 Release，两边产物都要上传，否则另一端的下载链接或自动更新会失效。
+### Windows 版本规则
 
-1. 把 `win/package.json` 的 `version` 和 `mac/Info.plist` 的 `CFBundleShortVersionString` 改成同一个版本，`CFBundleVersion` 加 1，合入 main。
-2. 执行 `sh mac/package.sh`，推送 `vX.Y.Z` tag，再执行 `gh release create vX.Y.Z --generate-notes dist/KeyCat-macOS.zip dist/KeyCat-macOS.zip.sha256 dist/latest-mac.json`。`latest-mac.json` 是 mac 版的更新清单，mac 版靠 `CFBundleVersion` 判断新旧，所以每次发布都要加 1。
-3. tag 触发 GitHub Actions，几分钟后会把 Windows 安装包、`latest.json`（新版的更新清单）和 `latest.yml`（让 1.0.x 旧版升级过来）补传到同一个 Release。
+- 同步上游、合并代码和本地测试时，保留当前 KeyCat-win 版本号。可以把多次同步合在一次发布里。
+- 准备向 Windows 用户发布时，以 KeyCat-win Releases 已发布的最高版本号为基准递增。修复通常递增补丁号，例如本仓库已发 `1.0.6`，同步了上游 `1.0.4` 的修复后，可以发布 `1.0.7`，并在发布说明里记录上游版本或提交。
+- 首个 Release 的版本号应高于需要接收更新的现有安装版。例如现有安装版是 `1.0.3` 时，可以从 `1.0.4` 开始发布。
+- 合并上游时保留本仓库的 Windows 更新地址、签名公钥和发布配置，确保已安装的 KeyCat-win 能继续收到更新。
+
+### Windows 发布流程
+
+Windows 版从 KeyCat-win 的 Releases 读取 `latest.json`。发布前，在仓库的 **Settings → Secrets and variables → Actions** 中添加 `TAURI_SIGNING_PRIVATE_KEY` 和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，分别使用 `signing/tauri-updater.key` 和 `signing/tauri-updater.password` 的内容。
+
+1. 修改 `win/package.json` 的 `version`，并在 `win/` 执行 `npm install --package-lock-only` 同步锁文件版本。
+2. 将版本改动提交到 main，推送对应的 `vX.Y.Z` 标签。GitHub Actions 会签名安装包，并在同一条 Release 上传 `KeyCat-Windows-Setup.exe`、`latest.json` 和供旧版 Electron 更新器使用的 `latest.yml`。
+
+### macOS 发布流程
+
+macOS 版的发布和更新仍使用上游仓库。打包时分别更新 `mac/Info.plist` 的 `CFBundleShortVersionString` 和 `CFBundleVersion`，再执行 `sh mac/package.sh`。macOS 更新器用 `CFBundleVersion` 判断新旧版本。
 
 ## 目录
 

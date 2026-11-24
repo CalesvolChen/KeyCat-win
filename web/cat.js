@@ -445,8 +445,10 @@
       nose: '#f0a3a3', mouth: '#c99c94', inner: '#f6c3c3', innerAmt: 1, shade: 0.5 },
     calico: { fur: '#fbf8f1', ink: '#c2b8a8', lid: '#6e5a4e', rim: '#8b8172', arm: '#c9c1b2', paw: '#fbf8f1', toe: '#e0c9c2', whisker: '#b6ada0', eye: 'gold',
       patchA: '#e5964a', patchB: '#2b2522', calico: 1, nose: '#eea29a', mouth: '#b08a80', inner: '#f2bcb6', innerAmt: 1, shade: 0.5 },
+    ragdoll: { fur: '#f2e5d1', ink: '#baa58d', lid: '#9eb8c0', rim: '#a18c76', arm: '#cab79f', paw: '#fbf1e1', toe: '#d6bcae', whisker: '#eadac3', eye: 'blueGrey',
+      point: '#473025', light: '#fcf0dd', bib: 1, bicolor: 1, nose: '#d48d84', mouth: '#a86d63', inner: '#855a43', innerAmt: 1, shade: 0.55 },
   };
-  const EYES = { gold: '#dcb64a', green: '#93c255', blue: '#6eb2e6', amber: '#e59a32', copper: '#d9792f' };
+  const EYES = { gold: '#dcb64a', green: '#93c255', blue: '#6eb2e6', amber: '#e59a32', copper: '#d9792f', blueGrey: '#8faeb8' };
   // Catchlight dots per style: [x (outer side +), y, radius].
   const SHINES = {
     none: [],

@@ -48,7 +48,9 @@ extension AppDelegate {
         // Off is the flat 2D sticker look; on adds soft volume shading.
         menu.addItem(toggle("立体效果（3D）", style == "3d") { $0.style = $0.style == "3d" ? "2d" : "3d" })
         menu.addItem(submenu("毛色", [("黑猫", "black"), ("奶牛猫", "tuxedo"), ("橘猫", "orange"), ("蓝灰猫", "grey"),
-                                      ("白猫", "white"), ("三花猫", "calico"), ("布偶猫", "ragdoll")], selected: coat) { $0.coat = $1 })
+                                      ("白猫", "white"), ("三花猫", "calico"), ("暹罗猫", "siamese"), ("布偶猫", "ragdoll"),
+                                      ("布偶猫（原版）", "ragdollClassic"),
+                                      ("德文卷毛猫", "devon"), ("美短银虎斑", "silver"), ("狸花猫", "lihua")], selected: coat) { $0.coat = $1 })
         // Only coats whose stripes would show get the choice; black and white stay plain.
         if coat == "orange" || coat == "grey" {
             let striped = pattern == "tabby" || (pattern == "auto" && coat == "orange")
@@ -68,11 +70,12 @@ extension AppDelegate {
         lookMenu.addItem(toggle("胡须", whiskers) { $0.whiskers.toggle() })
         looks.submenu = lookMenu
         menu.addItem(looks)
-        menu.addItem(submenu("大小", [("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)] as [(String, CGFloat)],
+        menu.addItem(submenu("大小", [("特小", 0.5), ("小", 0.7), ("中", 0.9), ("大", 1.1), ("特大", 1.35)] as [(String, CGFloat)],
                              selected: scale) { $0.applyScale($1, keepOrigin: true) })
         menu.addItem(submenu("多久睡着", [("30 秒", 30), ("1 分钟", 60), ("3 分钟", 180), ("10 分钟", 600), ("不睡", 0)],
                              selected: sleepAfter) { $0.sleepAfter = $1 })
         menu.addItem(toggle("隐私模式（不显示键名）", privacy) { $0.privacy.toggle() })
+        menu.addItem(toggle("鼠标穿透（点击直接落到下层窗口）", clickThrough) { $0.clickThrough.toggle() })
         menu.addItem(item("调节反应…") { $0.settings.show() })
         menu.addItem(.separator())
         menu.addItem(item("回到右下角") { $0.resetPosition() })

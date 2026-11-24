@@ -74,6 +74,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
         get { defaults.bool(forKey: "privacy") }
         set { defaults.set(newValue, forKey: "privacy") }
     }
+    /// Clicks always pass through to the window underneath; the menu is then reached from the menu bar.
+    var clickThrough: Bool {
+        get { defaults.bool(forKey: "clickThrough") }
+        set {
+            defaults.set(newValue, forKey: "clickThrough")
+            if !dragging { panel.ignoresMouseEvents = newValue || hit == "none" }
+        }
+    }
     var sleepAfter: Int {
         get { defaults.object(forKey: "sleepAfter") as? Int ?? 60 }
         set { defaults.set(newValue, forKey: "sleepAfter") }
@@ -219,12 +227,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, WKScri
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let value = body["hit"] as? String else { return }
         hit = value
-        if !dragging { panel.ignoresMouseEvents = value == "none" }
+        if !dragging { panel.ignoresMouseEvents = clickThrough || value == "none" }
         refreshCursor()
     }
 
     func refreshCursor() {
-        guard hit != "none" else { return }
+        guard hit != "none", !clickThrough else { return }
         (dragging ? NSCursor.closedHand : NSCursor.openHand).set()
     }
 

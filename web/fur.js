@@ -1,5 +1,6 @@
 // Fur: flat sticker colour plus the markings that make a coat read as a real cat — a pale muzzle
-// and bib, pink inner ears, tabby stripes, calico patches — and a soft top-left shade for volume.
+// and bib, pink inner ears, tabby stripes, calico patches, Siamese-style points, a rex curl — and
+// a soft top-left shade for volume.
 // Markings are placed in each part's rest shape, so they stay put when the spine bends.
 'use strict';
 (() => {
@@ -11,14 +12,16 @@
     uDark: { value: C('#151515') },      // tabby stripes
     uPatchA: { value: C('#151515') },    // calico patches
     uPatchB: { value: C('#151515') },
+    uPoint: { value: C('#151515') },     // colourpoint mask, ears, legs and tail
     uInner: { value: C('#151515') },     // inner ear
-    uPoint: { value: C('#151515') },     // bicolor mask, ears and tail
     uStripes: { value: 0 },
     uMuzzle: { value: 0 },
     uBib: { value: 0 },
     uCalico: { value: 0 },
     uTuxedo: { value: 0 },
     uBicolor: { value: 0 },
+    uPoints: { value: 0 },
+    uCurl: { value: 0 },
     uInnerAmt: { value: 0 },
     uShade: { value: 0 },
   };
@@ -30,7 +33,7 @@
     varying vec3 vNormal;
     varying float vAlong;
     void main() {
-      #ifdef BODY
+      #if defined(BODY) || defined(EAR)
         vRest = rest;
       #else
         vRest = position;
@@ -45,8 +48,8 @@
     }`;
 
   const fragment = `
-    uniform vec3 uFur, uLight, uDark, uPatchA, uPatchB, uInner, uPoint;
-    uniform float uStripes, uMuzzle, uBib, uCalico, uTuxedo, uBicolor, uInnerAmt, uShade;
+    uniform vec3 uFur, uLight, uDark, uPatchA, uPatchB, uPoint, uInner;
+    uniform float uStripes, uMuzzle, uBib, uCalico, uTuxedo, uBicolor, uPoints, uCurl, uInnerAmt, uShade;
     varying vec3 vRest;
     varying vec3 vNormal;
     varying float vAlong;
@@ -70,7 +73,8 @@
     void main() {
       vec3 col = uFur;
       vec3 p = vRest;
-      float light = 0.0, dark = 0.0, inner = 0.0, point = 0.0;
+      // \`point\`: how far into the colourpoint this spot is; \`curl\`: the rex coat's waves.
+      float light = 0.0, dark = 0.0, inner = 0.0, point = 0.0, curl = 0.0;
       #ifdef HEAD
         // Head geometry is a unit sphere scaled (0.56, 0.47, 0.47) by the mesh.
         if (uBicolor > 0.0) {
@@ -86,6 +90,9 @@
                       * smoothstep(0.0, 0.28, tip) * smoothstep(0.27, 0.52, p.z);
           point = cap * (1.0 - blaze);
           light = max(blaze, 1.0 - smoothstep(-0.82, -0.67, p.y)) * uBicolor;
+        } else if (p.z > 0.0) {
+          // Colourpoint mask: an oval over eyes, nose and muzzle that fades out towards the brow.
+          point = 1.0 - smoothstep(0.62, 1.0, length((p.xy - vec2(0.0, -0.2)) / vec2(0.74, 0.74)));
         }
         if (p.z > 0.0) {
           vec2 q = p.xy;
@@ -121,11 +128,15 @@
         dark = max(dark, band * uStripes);
         float pa = blob3(p, vec3(-0.5, 0.95, -0.3), 0.55);
         float pb = blob3(p, vec3(0.55, 0.55, -0.15), 0.5) * (1.0 - bib);
+        // Rex waves: short wavy lines all over, a shade darker than the coat.
+        curl = rings(p.y + 0.035 * sin(a * 11.0 + p.y * 7.0), 10.0, 0.14) * step(0.18, p.y) * step(p.y, 1.22);
       #endif
       #ifdef EAR
-        point = 1.0;
         // Ear lathe: radius shrinks from 0.28 at the base to 0 at the tip (y 0.37).
         // Every point lies on the lathe radius, so the inner ear is a band across the front face.
+        // The point colour comes in above the base, so the ear grows out of the head's colour
+        // rather than sitting on it like a cut-out.
+        point = uBicolor > 0.0 ? 1.0 : smoothstep(0.06, 0.2, p.y);
         float rMax = mix(0.28, 0.0, clamp((p.y + 0.06) / 0.43, 0.0, 1.0));
         inner = (1.0 - smoothstep(0.52, 0.58, abs(p.x) / max(rMax, 0.001))) * smoothstep(0.13, 0.14, p.y) * (1.0 - smoothstep(0.3, 0.31, p.y)) * step(0.0, p.z);
         #ifdef LEFT
@@ -135,21 +146,24 @@
         #endif
       #endif
       #ifdef TAIL
-        point = 1.0;
         // Rings down the tail, a dark tip; calico tails are black with one orange band.
         dark = max(dark, rings(vAlong, 5.0, 0.42) * step(0.2, vAlong) * uStripes);
         dark = max(dark, smoothstep(0.9, 0.91, vAlong) * uStripes);
         float pa = rings(vAlong + 0.12, 1.0, 0.3), pb = 1.0 - pa;
+        point = uBicolor > 0.0 ? 1.0 : smoothstep(0.0, 0.3, vAlong);
+        curl = rings(vAlong, 9.0, 0.16) * step(0.12, vAlong);
       #endif
       #ifdef ARM
         dark = max(dark, rings(vAlong, 3.0, 0.38) * step(0.4, vAlong) * uStripes);
         // Calico forelegs are white, as on most real calicos.
         float pa = 0.0, pb = 0.0;
+        // Points darken the legs from the elbow down.
+        point = uBicolor > 0.0 ? 0.0 : smoothstep(0.3, 0.8, vAlong);
       #endif
-      col = mix(col, uPoint, point * uBicolor);
       col = mix(col, uPatchA, pa * uCalico);
       col = mix(col, uPatchB, pb * uCalico);
-      col = mix(col, uDark, dark);
+      col = mix(col, uPoint, point * max(uPoints, uBicolor));
+      col = mix(col, uDark, max(dark, curl * uCurl));
       col = mix(col, uLight, light);
       col = mix(col, uInner, inner * uInnerAmt);
       // Soft volume: lit from the top left, a touch darker towards the silhouette and underneath.
@@ -157,6 +171,18 @@
       // Only the sides darken: a dark top edge would draw a seam where the ears meet the head.
       float lit = dot(n, normalize(vec3(-0.35, 0.75, 0.55)));
       float edge = (1.0 - clamp(n.z, 0.0, 1.0)) * abs(n.x);
+      // Where the ears grow out of the head, the ear's front face sits over the head's turning
+      // edge; shading them differently outlines the skull through the ear. So the top of the head
+      // and the ears share one even shade, matching the light the brow already gets.
+      #ifdef HEAD
+        float calm = smoothstep(0.05, 0.45, p.y);
+        lit = mix(lit, 0.8, calm);
+        edge *= 1.0 - calm;
+      #endif
+      #ifdef EAR
+        lit = 0.8;
+        edge = 0.0;
+      #endif
       col *= 1.0 + uShade * (0.18 * lit - 0.4 * edge * edge - 0.05);
       gl_FragColor = vec4(col, 1.0);
     }`;
@@ -170,7 +196,7 @@
 
   // Writes a coat: colours plus how strongly each marking shows (0 hides it).
   K.setFur = f => {
-    for (const k of ['fur', 'light', 'dark', 'patchA', 'patchB', 'inner', 'point']) U['u' + k[0].toUpperCase() + k.slice(1)].value.set(f[k] || f.fur);
-    for (const k of ['stripes', 'muzzle', 'bib', 'calico', 'tuxedo', 'bicolor', 'innerAmt', 'shade']) U['u' + k[0].toUpperCase() + k.slice(1)].value = f[k] || 0;
+    for (const k of ['fur', 'light', 'dark', 'patchA', 'patchB', 'point', 'inner']) U['u' + k[0].toUpperCase() + k.slice(1)].value.set(f[k] || f.fur);
+    for (const k of ['stripes', 'muzzle', 'bib', 'calico', 'tuxedo', 'bicolor', 'points', 'curl', 'innerAmt', 'shade']) U['u' + k[0].toUpperCase() + k.slice(1)].value = f[k] || 0;
   };
 })();

@@ -228,29 +228,110 @@
   chinLine.scale.copy(R);
   head.add(headRim, chinLine, headMesh);
 
-  // Ears: rounded triangles whose bases flare into the head, so the outline curves smoothly from
-  // head to ear instead of meeting it at a notch. The outline is the same shape grown evenly.
-  const earPts = [[0.28, -0.06], [0.255, 0.02], [0.225, 0.1], [0.185, 0.19], [0.135, 0.27], [0.08, 0.33], [0.035, 0.36], [0, 0.37]];
-  const earLathe = grow => {
-    const pts = earPts.map(([r, y], i) => new THREE.Vector2(r + grow, y + grow * (i / (earPts.length - 1)) ** 2));
-    pts.unshift(new THREE.Vector2(0, -0.06));
-    return new THREE.LatheGeometry(new THREE.SplineCurve(pts).getSpacedPoints(30), 40);
+  // Ears: rounded triangles that grow out of the head. Where the outer edge reaches the cheek it
+  // bends round to follow the head's outline just inside it, so the two meet in one smooth curve
+  // instead of a kink, and below that the base rounds off out of sight inside the head. The
+  // outline is the same shape grown evenly.
+  // Bigger ears (the Devon's, `k` > 1) grow taller and broader above the base and lean further
+  // out (`earTilt`); the fillet is worked out for each, against the head as that ear sees it.
+  const EAR_AT = V(0.26, 0.21, -0.06), EAR_STRETCH = 1.12;
+  const earTilt = k => 0.2 + 0.5 * (k - 1);
+  const earTop = [[0.225, 0.1], [0.185, 0.19], [0.135, 0.27], [0.08, 0.33], [0.035, 0.36], [0, 0.37]];
+  // The head's outer outline (see headGeo, `grow` for its rim) in the right ear's own frame, as
+  // radius for height.
+  const headInEar = (k, grow) => {
+    const t = earTilt(k), c = Math.cos(t), sn = Math.sin(t), out = [];
+    for (let i = 0; i <= 200; i++) {
+      const y = -0.6 + 1.6 * i / 200;
+      const cheek = 1 + 0.08 * Math.exp(-(((y + 0.38) / 0.4) ** 2)) - 0.08 * (y + 0.2);
+      const dx = (R.x + grow) * cheek * Math.sqrt(Math.max(0, 1 - y * y)) - EAR_AT.x;
+      const dy = (R.y + grow) * (y > 0 ? y * (1 - 0.06 * y) : y * 0.96) - EAR_AT.y;
+      out.push([c * dx - sn * dy, (sn * dx + c * dy) / EAR_STRETCH]);
+    }
+    return y => {
+      for (let i = 1; i < out.length; i++) {
+        const [r0, y0] = out[i - 1], [r1, y1] = out[i];
+        if ((y0 - y) * (y1 - y) <= 0 && y0 !== y1) return r0 + (r1 - r0) * (y - y0) / (y1 - y0);
+      }
+      return 0;
+    };
   };
-  const earGeo = earLathe(0), earRimGeo = earLathe(0.026);
+  const smax = (a, b, k) => { const h = K.clamp(0.5 + 0.5 * (a - b) / k, 0, 1); return mix(b, a, h) + k * h * (1 - h); };
+  // The profile, bottom to top, for the ear (`grow` 0) or its outline: the outer edge carried on
+  // straight down from the ear, merged with the head's outline in a rounded fillet and then kept
+  // inside it, down to a rounded-off bottom. `meet` is just below where the edge reaches the head.
+  const earProfile = (k, grow) => {
+    const big = ([r, y]) => [r * (1 + (k - 1) * smooth(-0.06, 0.2, y)), -0.06 + (y + 0.06) * (1 + 0.6 * (k - 1))];
+    const n = earTop.length - 1;
+    const top = earTop.map(big).map(([r, y], i) => [r && r + grow, y + grow * (i / n) ** 2]);
+    const head = headInEar(k, grow && 0.024);
+    const [[ra, ya], [rb, yb]] = top, edge = y => ra + (rb - ra) * (y - ya) / (yb - ya);
+    // Just inside the head where the two meet, then well inside it further down, so the base
+    // stays hidden as the ear turns and the head moves, and turns into the rounded bottom out of
+    // sight.
+    let meet = ya;
+    while (meet > -0.2 && edge(meet) > head(meet)) meet -= 0.002;
+    const side = y => smax(edge(y), head(y) - 0.006 - 0.07 * smooth(meet - 0.01, meet - 0.13, y), 0.03);
+    const pts = [[0, -0.25], [0.2, -0.24]];
+    for (let i = 0; i < 16; i++) {
+      const y = -0.2 + (ya + 0.2) * i / 16;
+      pts.push([side(y), y]);
+    }
+    return { pts: pts.concat(top), meet: [side(meet - 0.03), meet - 0.03], join: meet };
+  };
+  // The markings read the unscaled shape (`rest`), so the inner ear grows with the ear. Sampled
+  // by curve parameter, so each vertex of a big ear lines up with the same one of the plain ear.
+  // Below the join the base thins front to back, so that turning the head does not swing its
+  // front or back out past the side of the head.
+  const earLathe = ({ pts, join }) => {
+    const g = new THREE.LatheGeometry(new THREE.SplineCurve(pts.map(([r, y]) => new THREE.Vector2(r, y))).getPoints(48), 40);
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) pos.setZ(i, pos.getZ(i) * mix(1, 0.3, smooth(join, join - 0.1, pos.getY(i))));
+    return g;
+  };
+  const earGeos = {};
+  const earGeo = k => earGeos[k] || (earGeos[k] = (() => {
+    const geos = [0, 0.026].map(grow => {
+      const g = earLathe(earProfile(k, grow));
+      g.setAttribute('rest', earLathe(earProfile(1, grow)).attributes.position);
+      g.computeVertexNormals();
+      return g;
+    });
+    return { geos, meet: earProfile(k, 0).meet };
+  })());
+  // Turns an ear: `z` leans it out, `x` tips it back. Leaning out, it turns about the middle of
+  // its base, so the part under the cheek swings in. Standing up, about a point just below where
+  // its outer edge meets the head, so the join moves in a touch rather than out; the base below
+  // swings out a little, but sits far enough inside the head not to show.
+  const earRest = new THREE.Euler(), earPivot = V(), earHeld = V();
+  const turnEar = (ear, z, x) => {
+    ear.group.rotation.set(x, 0, z);
+    earPivot.copy(ear.meet).multiplyScalar(smooth(0, 0.1, ear.tilt + ear.s * z)).multiply(ear.group.scale);
+    earHeld.copy(earPivot).applyEuler(earRest.set(-0.12, 0, -ear.s * ear.tilt));
+    ear.group.position.set(ear.s * EAR_AT.x, EAR_AT.y, EAR_AT.z).add(earHeld).sub(earPivot.applyEuler(ear.group.rotation));
+  };
+  const placeEar = (ear, k) => {
+    const { geos: [geo, rimGeo], meet } = earGeo(k);
+    ear.mesh.geometry = geo;
+    ear.rim.geometry = rimGeo;
+    ear.tilt = earTilt(k);
+    ear.meet = V(ear.s * meet[0], meet[1], 0);
+    turnEar(ear, -ear.s * ear.tilt, -0.12);
+  };
   const ears = [-1, 1].map(s => {
     const g = new THREE.Group();
-    // Sunk deep enough that the flared base stays inside the head's outline.
-    g.position.set(s * 0.26, 0.21, -0.06);
-    g.rotation.set(-0.12, 0, -s * 0.2);
-    g.scale.set(1, 1.12, 1);
-    const e = new THREE.Mesh(earGeo, fur.ears[s < 0 ? 0 : 1]);
+    g.scale.set(1, EAR_STRETCH, 1);
+    const e = new THREE.Mesh(undefined, fur.ears[s < 0 ? 0 : 1]);
     e.scale.set(1, 1, 0.5);
-    const r = new THREE.Mesh(earRimGeo, rimMat);
+    const r = new THREE.Mesh(undefined, rimMat);
     r.scale.set(1, 1, 0.5 + 0.06);
     r.renderOrder = -1;
     g.add(r, e);
     head.add(g);
-    return { group: g, mesh: e, s };
+    // `tilt`: how far the ear leans out at rest; the behaviour adds its swivel to it.
+    const ear = { group: g, mesh: e, rim: r, s, tilt: 0.2, meet: V() };
+    placeEar(ear, 1);
+    return ear;
   });
 
   // Eyes sit on the face surface and face along its normal.
@@ -429,15 +510,18 @@
   }
 
   // Coats, drawn from real cats: each has its own nose, inner ear, muzzle and bib colours, and the
-  // `eye` it most often has. `tabby` lists the stripe colour for coats that can be striped.
-  // `shade` is the soft volume shading; black stays a flat silhouette like the reference.
+  // `eye` it most often has. `tabby` lists the stripe colour for coats that can be striped, and
+  // `striped` ones wear the stripes unless the pattern is set to solid. `point` and `points` give
+  // the dark mask, ears, legs and tail of colourpoint breeds; `curl` the waves of a rex coat in the
+  // `wave` colour, and `ears` scales the ears. `shade` is the soft volume shading; black stays a
+  // flat silhouette like the reference.
   const COATS = {
     black: { fur: '#151515', ink: '#151515', rim: '#f6f3e8', arm: '#8a8984', paw: '#f7f6f0', toe: '#b9b7ae', whisker: '#dedcd4', eye: 'gold' },
     tuxedo: { fur: '#1a1a1a', ink: '#151515', lid: '#e4c25a', rim: '#f6f3e8', arm: '#8a8984', paw: '#f8f7f2', toe: '#bcbab2', whisker: '#e8e6de', eye: 'green',
       light: '#f8f7f2', muzzle: 1, tuxedo: 1, nose: '#e7a0a0', mouth: '#9a8f88', inner: '#3a2e2e', innerAmt: 1, shade: 0.25 },
     orange: { fur: '#eda25a', ink: '#b8712f', lid: '#8a4a1f', rim: '#fff8ea', arm: '#b8712f', paw: '#fff6e8', toe: '#e0b991', whisker: '#fffaf0', eye: 'green',
       light: '#fff1dc', muzzle: 1, bib: 1, nose: '#e58a78', mouth: '#a5643a', inner: '#f4b6a2', innerAmt: 1, shade: 0.55,
-      tabby: '#c46a2b' },
+      tabby: '#c46a2b', striped: true },
     grey: { fur: '#8995a4', ink: '#5f6a78', lid: '#3d4450', rim: '#f6f5f0', arm: '#5f6a78', paw: '#f2f1ec', toe: '#bfc3c8', whisker: '#f4f2ea', eye: 'amber',
       light: '#b8c1cc', muzzle: 0.8, bib: 0.6, nose: '#6d6f7d', mouth: '#56606d', inner: '#c9aeb4', innerAmt: 1, shade: 0.55,
       tabby: '#5e6a79' },
@@ -447,6 +531,23 @@
       patchA: '#e5964a', patchB: '#2b2522', calico: 1, nose: '#eea29a', mouth: '#b08a80', inner: '#f2bcb6', innerAmt: 1, shade: 0.5 },
     ragdoll: { fur: '#f2e5d1', ink: '#baa58d', lid: '#9eb8c0', rim: '#a18c76', arm: '#cab79f', paw: '#fbf1e1', toe: '#d6bcae', whisker: '#eadac3', eye: 'blueGrey',
       point: '#473025', light: '#fcf0dd', bib: 1, bicolor: 1, nose: '#d48d84', mouth: '#a86d63', inner: '#855a43', innerAmt: 1, shade: 0.55 },
+    // Seal point: cream body, dark brown mask, ears, legs, paws and tail.
+    siamese: { fur: '#f0e4cf', ink: '#8b6f5c', rim: '#8b7a68', arm: '#6e5444', paw: '#5a4033', toe: '#3b2a21', whisker: '#f3ece0', eye: 'blue',
+      point: '#4b3428', points: 1, nose: '#2f211b', mouth: '#24180f', inner: '#6d5244', innerAmt: 1, shade: 0.45 },
+    // Seal bicolour: softer points, white inverted V on the face, white chest and mitts.
+    ragdollClassic: { fur: '#f5eee3', ink: '#a8927f', rim: '#8b8172', arm: '#a8927f', paw: '#fdfbf7', toe: '#ddd2c6', whisker: '#cfc4b6', eye: 'blue',
+      point: '#6f5242', points: 1, light: '#fdfbf7', muzzle: 1, tuxedo: 1, bib: 1, nose: '#e39b98', mouth: '#a07e70', inner: '#9a7466', innerAmt: 1, shade: 0.5 },
+    // Devon rex: big low-set ears and a short wavy coat, here in lilac.
+    devon: { fur: '#b3a8ad', ink: '#7f7479', lid: '#5b5156', rim: '#fbf9f6', arm: '#7f7479', paw: '#efeaec', toe: '#c3b9be', whisker: '#fbf9f6', eye: 'gold',
+      light: '#d9d1d5', muzzle: 0.8, wave: '#9a8f95', curl: 1, ears: 1.45, nose: '#d79a9e', mouth: '#7f7479', inner: '#e8b9bf', innerAmt: 1, shade: 0.5 },
+    // American shorthair: silver with black tabby stripes.
+    silver: { fur: '#c7ccd1', ink: '#7d838a', lid: '#3f444a', rim: '#fbfbf8', arm: '#7d838a', paw: '#f1f2f2', toe: '#b6bcc2', whisker: '#fbfbf8', eye: 'green',
+      light: '#f1f2f2', muzzle: 1, bib: 0.8, nose: '#c98a8a', mouth: '#6c7279', inner: '#e5b8bb', innerAmt: 1, shade: 0.55,
+      tabby: '#2e3136', striped: true },
+    // Chinese li hua: brown mackerel tabby.
+    lihua: { fur: '#a98a62', ink: '#6e5640', lid: '#3d2f22', rim: '#fff8ec', arm: '#6e5640', paw: '#efe5d3', toe: '#c9b493', whisker: '#fff8ec', eye: 'green',
+      light: '#eadfca', muzzle: 1, bib: 0.7, nose: '#b8735f', mouth: '#5e4836', inner: '#d9a894', innerAmt: 1, shade: 0.55,
+      tabby: '#3d2f22', striped: true },
   };
   const EYES = { gold: '#dcb64a', green: '#93c255', blue: '#6eb2e6', amber: '#e59a32', copper: '#d9792f', blueGrey: '#8faeb8' };
   // Catchlight dots per style: [x (outer side +), y, radius].
@@ -462,9 +563,11 @@
   function setLook(o) {
     Object.assign(look, o);
     const c = COATS[look.coat] || COATS.black;
-    const striped = c.tabby && (look.pattern === 'tabby' || (look.pattern === 'auto' && look.coat === 'orange'));
+    const striped = c.tabby && (look.pattern === 'tabby' || (look.pattern === 'auto' && c.striped));
     const solid = look.style === '3d';
-    K.setFur({ ...c, dark: c.tabby || c.fur, stripes: striped ? 1 : 0, shade: solid ? c.shade : 0 });
+    K.setFur({ ...c, dark: c.tabby || c.wave || c.fur, stripes: striped ? 1 : 0, shade: solid ? c.shade : 0 });
+    // Big ears lean further out, set low and wide on the head as a Devon's are.
+    for (const e of ears) placeEar(e, c.ears || 1);
     K.mouseProp.setStyle(look.style);
     chinLine.visible = !solid;
     chinMat.uniforms.uColor.value.set(c.ink || c.arm);
@@ -507,7 +610,7 @@
     tailTip: out => tailCurve.getPoint(1, out),
     petMeshes: [headMesh, ...ears.map(e => e.mesh)],
     dragMeshes: [bodyMesh, tail.body, ...arms.flatMap(a => [a.limb.body, a.paw]), ...hind],
-    updateArm, updateTail, setLook, look,
+    updateArm, updateTail, turnEar, setLook, look,
   };
   setLook({});
 })();

@@ -713,7 +713,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             ("白猫", json!("white")),
             ("三花猫", json!("calico")),
             ("暹罗猫", json!("siamese")),
-            ("布偶猫", json!("ragdoll")),
+            ("有鱼", json!("ragdoll")),
             ("布偶猫（原版）", json!("ragdollClassic")),
             ("德文卷毛猫", json!("devon")),
             ("美短银虎斑", json!("silver")),
